@@ -211,3 +211,203 @@ def test_aws_discovery_failure_returns_502(client, monkeypatch):
     assert response.json()["detail"] == (
         "AWS EC2 discovery or inventory synchronization failed"
     )
+
+
+def test_multi_region_discovery_inserts_instances(client, monkeypatch):
+    """Verify that instances from multiple regions are synchronized."""
+
+    discovered_instances = [
+        {
+            "name": "mumbai-server",
+            "provider": "AWS",
+            "instance_id": "i-mumbai123",
+            "region": "ap-south-1",
+            "private_ip": "10.0.1.10",
+            "public_ip": None,
+            "status": "running",
+            "operating_system": "Linux/UNIX"
+        },
+        {
+            "name": "singapore-server",
+            "provider": "AWS",
+            "instance_id": "i-singapore123",
+            "region": "ap-southeast-1",
+            "private_ip": "10.0.2.10",
+            "public_ip": None,
+            "status": "stopped",
+            "operating_system": "Linux/UNIX"
+        }
+    ]
+
+    monkeypatch.setattr(
+        "app.api.servers.discover_ec2_instances_across_regions",
+        lambda: {
+            "regions_checked": 2,
+            "successful_regions": ["ap-south-1", "ap-southeast-1"],
+            "failed_regions": [],
+            "discovered": 2,
+            "instances": discovered_instances
+        }
+    )
+
+    response = client.post("/servers/discover/aws/all-regions")
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert result["status"] == "success"
+    assert result["regions_checked"] == 2
+    assert result["discovered"] == 2
+    assert result["created"] == 2
+    assert result["updated"] == 0
+
+    inventory = client.get("/servers/").json()
+
+    assert len(inventory) == 2
+    assert {server["region"] for server in inventory} == {
+        "ap-south-1",
+        "ap-southeast-1"
+    }
+
+
+def test_multi_region_discovery_handles_partial_failure(
+    client, monkeypatch
+):
+    """Verify successful regions are synchronized despite another failure."""
+
+    discovered_instances = [
+        {
+            "name": "singapore-server",
+            "provider": "AWS",
+            "instance_id": "i-singapore456",
+            "region": "ap-southeast-1",
+            "private_ip": "10.0.3.10",
+            "public_ip": None,
+            "status": "running",
+            "operating_system": "Linux/UNIX"
+        }
+    ]
+
+    monkeypatch.setattr(
+        "app.api.servers.discover_ec2_instances_across_regions",
+        lambda: {
+            "regions_checked": 2,
+            "successful_regions": ["ap-southeast-1"],
+            "failed_regions": [
+                {
+                    "region": "ap-south-1",
+                    "error": "Access denied"
+                }
+            ],
+            "discovered": 1,
+            "instances": discovered_instances
+        }
+    )
+
+    response = client.post("/servers/discover/aws/all-regions")
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert result["status"] == "partial_success"
+    assert result["created"] == 1
+    assert result["updated"] == 0
+    assert len(result["failed_regions"]) == 1
+
+    inventory = client.get("/servers/").json()
+
+    assert len(inventory) == 1
+    assert inventory[0]["instance_id"] == "i-singapore456"
+
+
+def test_multi_region_discovery_all_regions_fail(
+    client, monkeypatch
+):
+    """Verify all-region failure returns 502 without changing inventory."""
+
+    payload = {
+        "name": "existing-manual-server",
+        "provider": "AWS",
+        "instance_id": "i-manual456",
+        "region": "ap-south-1",
+        "private_ip": "10.0.4.10",
+        "public_ip": None,
+        "status": "stopped",
+        "operating_system": "Ubuntu 24.04"
+    }
+
+    client.post("/servers/", json=payload)
+
+    monkeypatch.setattr(
+        "app.api.servers.discover_ec2_instances_across_regions",
+        lambda: {
+            "regions_checked": 2,
+            "successful_regions": [],
+            "failed_regions": [
+                {"region": "ap-south-1", "error": "Access denied"},
+                {"region": "ap-southeast-1", "error": "Timeout"}
+            ],
+            "discovered": 0,
+            "instances": []
+        }
+    )
+
+    response = client.post("/servers/discover/aws/all-regions")
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == (
+        "AWS discovery failed in all regions"
+    )
+
+    inventory = client.get("/servers/").json()
+
+    assert len(inventory) == 1
+    assert inventory[0]["instance_id"] == "i-manual456"
+
+
+def test_multi_region_empty_discovery_preserves_inventory(
+    client, monkeypatch
+):
+    """Verify successful empty discovery preserves existing records."""
+
+    payload = {
+        "name": "manual-server",
+        "provider": "AWS",
+        "instance_id": "i-manual789",
+        "region": "ap-south-1",
+        "private_ip": "10.0.5.10",
+        "public_ip": None,
+        "status": "stopped",
+        "operating_system": "Ubuntu 24.04"
+    }
+
+    client.post("/servers/", json=payload)
+
+    monkeypatch.setattr(
+        "app.api.servers.discover_ec2_instances_across_regions",
+        lambda: {
+            "regions_checked": 2,
+            "successful_regions": ["ap-south-1", "ap-southeast-1"],
+            "failed_regions": [],
+            "discovered": 0,
+            "instances": []
+        }
+    )
+
+    response = client.post("/servers/discover/aws/all-regions")
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert result["status"] == "success"
+    assert result["discovered"] == 0
+    assert result["created"] == 0
+    assert result["updated"] == 0
+
+    inventory = client.get("/servers/").json()
+
+    assert len(inventory) == 1
+    assert inventory[0]["instance_id"] == "i-manual789"

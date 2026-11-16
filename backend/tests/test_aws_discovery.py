@@ -151,3 +151,115 @@ def test_discovery_processes_multiple_pages():
     assert len(result) == 2
     assert result[0]["instance_id"] == "i-first"
     assert result[1]["instance_id"] == "i-second"
+
+
+def test_get_available_regions_excludes_not_opted_in_regions():
+    """Only return regions enabled for the AWS account."""
+
+    mock_ec2 = MagicMock()
+    mock_ec2.describe_regions.return_value = {
+        "Regions": [
+            {
+                "RegionName": "ap-south-1",
+                "OptInStatus": "opt-in-not-required"
+            },
+            {
+                "RegionName": "ap-southeast-1",
+                "OptInStatus": "opted-in"
+            },
+            {
+                "RegionName": "ap-east-1",
+                "OptInStatus": "not-opted-in"
+            }
+        ]
+    }
+
+    with patch(
+        "app.services.aws_discovery.boto3.client",
+        return_value=mock_ec2
+    ) as mock_client:
+
+        from app.services.aws_discovery import get_available_regions
+
+        result = get_available_regions()
+
+    mock_client.assert_called_once_with("ec2")
+    assert result == ["ap-south-1", "ap-southeast-1"]
+
+
+def test_multi_region_discovery_collects_instances(monkeypatch):
+    """Verify discovery across multiple regions."""
+
+    from app.services.aws_discovery import (
+        discover_ec2_instances_across_regions
+    )
+
+    def mock_discovery(region):
+        return [
+            {
+                "name": f"server-{region}",
+                "provider": "AWS",
+                "instance_id": f"i-{region}",
+                "region": region,
+                "private_ip": None,
+                "public_ip": None,
+                "status": "running",
+                "operating_system": "Linux/UNIX"
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.services.aws_discovery.discover_ec2_instances",
+        mock_discovery
+    )
+
+    result = discover_ec2_instances_across_regions(
+        regions=["ap-south-1", "ap-southeast-1"]
+    )
+
+    assert result["regions_checked"] == 2
+    assert len(result["successful_regions"]) == 2
+    assert result["failed_regions"] == []
+    assert result["discovered"] == 2
+    assert len(result["instances"]) == 2
+
+
+def test_multi_region_discovery_continues_after_region_failure(monkeypatch):
+    """A failure in one region must not stop other regions."""
+
+    from app.services.aws_discovery import (
+        discover_ec2_instances_across_regions
+    )
+
+    def mock_discovery(region):
+        if region == "ap-south-1":
+            raise RuntimeError("Simulated AWS permission error")
+
+        return [
+            {
+                "name": "singapore-server",
+                "provider": "AWS",
+                "instance_id": "i-singapore123",
+                "region": region,
+                "private_ip": None,
+                "public_ip": None,
+                "status": "running",
+                "operating_system": "Linux/UNIX"
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.services.aws_discovery.discover_ec2_instances",
+        mock_discovery
+    )
+
+    result = discover_ec2_instances_across_regions(
+        regions=["ap-south-1", "ap-southeast-1"]
+    )
+
+    assert result["regions_checked"] == 2
+    assert result["successful_regions"] == ["ap-southeast-1"]
+    assert len(result["failed_regions"]) == 1
+    assert result["failed_regions"][0]["region"] == "ap-south-1"
+    assert result["discovered"] == 1
+    assert result["instances"][0]["instance_id"] == "i-singapore123"

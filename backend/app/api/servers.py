@@ -6,7 +6,10 @@ from app.core.database import SessionLocal
 from app.models.server import Server
 from ipaddress import ip_address
 from pydantic import field_validator, Field
-from app.services.aws_discovery import discover_ec2_instances
+from app.services.aws_discovery import (
+    discover_ec2_instances,
+    discover_ec2_instances_across_regions
+)
 
 router = APIRouter(prefix="/servers", tags=["Servers"])
 
@@ -229,4 +232,97 @@ def discover_aws_servers(
         raise HTTPException(
             status_code=502,
             detail="AWS EC2 discovery or inventory synchronization failed"
+        )
+
+
+@router.post("/discover/aws/all-regions")
+def discover_aws_servers_all_regions(
+    db: Session = Depends(get_db)
+):
+    """
+    Discover EC2 instances across all available AWS regions
+    and synchronize successful discovery results with PostgreSQL.
+    """
+
+    try:
+        discovery_result = discover_ec2_instances_across_regions()
+
+        successful_regions = discovery_result["successful_regions"]
+        failed_regions = discovery_result["failed_regions"]
+        instances = discovery_result["instances"]
+
+        # If every region failed, do not modify the inventory.
+        if failed_regions and not successful_regions:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "AWS discovery failed in all regions",
+                    "failed_regions": failed_regions
+                }
+            )
+
+        created = 0
+        updated = 0
+
+        allowed_statuses = {
+            "running",
+            "stopped",
+            "pending",
+            "terminated",
+            "unknown"
+        }
+
+        for instance_data in instances:
+
+            instance_data = instance_data.copy()
+
+            if instance_data["status"] not in allowed_statuses:
+                instance_data["status"] = "unknown"
+
+            existing_server = db.query(Server).filter(
+                Server.provider == "AWS",
+                Server.region == instance_data["region"],
+                Server.instance_id == instance_data["instance_id"]
+            ).first()
+
+            if existing_server:
+                for field, value in instance_data.items():
+                    setattr(existing_server, field, value)
+
+                updated += 1
+
+            else:
+                new_server = Server(**instance_data)
+                db.add(new_server)
+                created += 1
+
+        db.commit()
+
+        return {
+            "message": (
+                "Multi-region AWS discovery completed"
+                if not failed_regions
+                else "Multi-region AWS discovery completed with some failures"
+            ),
+            "status": (
+                "success" if not failed_regions
+                else "partial_success"
+            ),
+            "regions_checked": discovery_result["regions_checked"],
+            "successful_regions": successful_regions,
+            "failed_regions": failed_regions,
+            "discovered": len(instances),
+            "created": created,
+            "updated": updated
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=502,
+            detail="Multi-region AWS discovery or inventory synchronization failed"
         )

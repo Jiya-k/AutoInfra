@@ -1,3 +1,0 @@
-[profile autoinfra-dev]
-region = ap-south-1
-credential_process = /bin/cat /home/appuser/.aws-credentials/credentials.json

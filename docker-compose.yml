@@ -6,7 +6,7 @@ services:
     image: autoinfra-frontend:1.0
     container_name: autoinfra-frontend
     ports:
-      - "8080:80"
+      - "80:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -28,12 +28,6 @@ services:
     container_name: autoinfra-backend
     env_file:
       - .env
-    environment:
-      AWS_PROFILE: autoinfra-dev
-      AWS_CONFIG_FILE: /home/appuser/.aws/config
-    volumes:
-      - ./.aws-credentials:/home/appuser/.aws-credentials:ro
-      - ./docker/aws-config:/home/appuser/.aws/config:ro
     depends_on:
       db:
         condition: service_healthy

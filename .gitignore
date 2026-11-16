@@ -32,3 +32,14 @@ id_ed25519
 # OS files
 .DS_Store
 Thumbs.db
+
+# AWS credentials
+.aws/
+.aws-credentials/
+credentials
+config
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+.terraform/

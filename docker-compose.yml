@@ -1,0 +1,46 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: autoinfra-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      AWS_PROFILE: autoinfra-dev
+      AWS_CONFIG_FILE: /home/appuser/.aws/config
+    volumes:
+      - ./.aws-credentials:/home/appuser/.aws-credentials:ro
+      - ./docker/aws-config:/home/appuser/.aws/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - autoinfra-network
+
+  db:
+    image: postgres:17
+    container_name: autoinfra-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - autoinfra-network
+
+volumes:
+  postgres-data:
+
+networks:
+  autoinfra-network:
+    driver: bridge
